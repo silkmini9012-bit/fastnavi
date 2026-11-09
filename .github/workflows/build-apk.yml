@@ -24,6 +24,8 @@ jobs:
             echo "ANDROID_HOME=$ANDROID_HOME ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
             java -version
             chmod +x gradlew
+            # Gradle 배포판 다운로드가 일시적으로 실패하는 경우 재시도
+            for i in 1 2 3 4 5; do ./gradlew --no-daemon --version && break; echo "retry $i"; sleep 20; done
             echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > local.properties
             ./gradlew --no-daemon --stacktrace assembleDebug
           } 2>&1 | tee build.log
