@@ -22,8 +22,19 @@ jobs:
       - name: Build debug APK
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          set -o pipefail
+          ./gradlew --no-daemon assembleDebug 2>&1 | tee build.log
           cp app/build/outputs/apk/debug/app-debug.apk FastNavi.apk
+      # 실패 시 빌드 로그를 ci-log 브랜치에 올려서 확인할 수 있게 함
+      - name: Upload log on failure
+        if: failure()
+        run: |
+          mkdir /tmp/log && cp build.log /tmp/log/ || echo "no log" > /tmp/log/build.log
+          cd /tmp/log
+          git init -q -b ci-log
+          git config user.name ci && git config user.email ci@example.com
+          git add . && git commit -q -m "build log ${{ github.run_number }}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" ci-log
       - uses: actions/upload-artifact@v4
         with:
           name: FastNavi-apk
