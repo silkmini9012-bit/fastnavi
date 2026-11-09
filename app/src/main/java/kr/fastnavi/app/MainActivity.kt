@@ -169,7 +169,6 @@ private fun MainScreen(vm: MainViewModel, onSettings: () -> Unit, onSearch: (Tar
             }
             item { PlaceInputCard(vm, onSearch) }
             if (vm.recentGoals.isNotEmpty()) item { QuickGoals(vm) }
-            item { CriterionRow(vm) }
             item {
                 Button(
                     onClick = {
@@ -321,20 +320,6 @@ private fun QuickGoals(vm: MainViewModel) {
 }
 
 @Composable
-private fun CriterionRow(vm: MainViewModel) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("기준", color = Color.Gray, fontSize = 13.sp)
-        Criterion.entries.forEach { c ->
-            FilterChip(
-                selected = vm.settings.criterion == c,
-                onClick = { vm.saveSettings(vm.settings.copy(criterion = c)) },
-                label = { Text(if (c == Criterion.DEFAULT) "가장 빠른 길" else "무료도로만") },
-            )
-        }
-    }
-}
-
-@Composable
 private fun BestCard(vm: MainViewModel, best: AppComparison) {
     val r = vm.routeFor(best) ?: return
     val appColor = Color(best.app.color)
@@ -367,9 +352,9 @@ private fun BestCard(vm: MainViewModel, best: AppComparison) {
             )
             // 2등과의 차이
             val second = vm.results.filter { it.app != best.app && it.installed }
-                .mapNotNull { vm.routeFor(it) }.minByOrNull { vm.etaOf(it) }
+                .mapNotNull { vm.routeFor(it) }.minByOrNull { it.durationSec }
             if (second != null) {
-                val gap = ((vm.etaOf(second) - vm.etaOf(r)) / 1000).toInt()
+                val gap = second.durationSec - r.durationSec
                 Text(
                     if (gap >= 60) "다음으로 빠른 앱보다 ${Fmt.duration(gap)} 빨라요" else "다른 앱과 거의 같아요 (1분 이내)",
                     color = Color(0xFFB8C4DC), fontSize = 13.sp,
@@ -388,7 +373,7 @@ private fun BestCard(vm: MainViewModel, best: AppComparison) {
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Navy),
                     shape = RoundedCornerShape(12.dp),
-                ) { Text("${best.app.label}로 안내 시작", fontWeight = FontWeight.Bold, fontSize = 16.sp) }
+                ) { Text("${best.app.withRo} 안내 시작", fontWeight = FontWeight.Bold, fontSize = 16.sp) }
             }
         }
     }
@@ -410,7 +395,7 @@ private fun TollBadge(toll: Int?) {
 @Composable
 private fun AppCard(vm: MainViewModel, c: AppComparison, isBest: Boolean, maxDur: Int) {
     val appColor = Color(c.app.color)
-    val freeMode = vm.settings.criterion == Criterion.FREE
+    val freeMode = false
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
         shape = RoundedCornerShape(14.dp),
@@ -493,7 +478,7 @@ private fun AppCard(vm: MainViewModel, c: AppComparison, isBest: Boolean, maxDur
                     onClick = { vm.launchNav(c.app) },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
-                ) { Text(if (c.installed) "${c.app.label}로 안내" else "${c.app.label} 설치하기") }
+                ) { Text(if (c.installed) "${c.app.withRo} 안내" else "${c.app.label} 설치하기") }
             }
         }
     }
@@ -712,16 +697,6 @@ private fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
             }
             SwitchRow("가장 빠른 앱 자동 실행", "비교가 끝나면 3초 후 1등 앱으로 안내를 시작합니다", s.autoLaunch) {
                 s = s.copy(autoLaunch = it)
-            }
-            Text("가장 빠른 앱 선택 기준", fontWeight = FontWeight.SemiBold)
-            Criterion.entries.forEach { c ->
-                Row(
-                    Modifier.fillMaxWidth().clickable { s = s.copy(criterion = c) },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RadioButton(selected = s.criterion == c, onClick = { s = s.copy(criterion = c) })
-                    Text(c.label)
-                }
             }
             Spacer(Modifier.height(8.dp))
             Button(onClick = { vm.saveSettings(s); onBack() }, modifier = Modifier.fillMaxWidth()) { Text("저장") }

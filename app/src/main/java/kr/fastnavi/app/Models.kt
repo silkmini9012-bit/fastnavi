@@ -10,10 +10,11 @@ data class Place(
     val pinned: Boolean = false,
 )
 
-enum class NavApp(val label: String, val pkg: String, val color: Long) {
-    TMAP("티맵", "com.skt.tmap.ku", 0xFF0064FF),
-    NAVER("네이버지도", "com.nhn.android.nmap", 0xFF03C75A),
-    KAKAO("카카오맵", "net.daum.android.map", 0xFFFFB800),
+/** withRo: 받침에 맞춘 조사 (티맵으로 / 네이버지도로 / 카카오맵으로) */
+enum class NavApp(val label: String, val withRo: String, val pkg: String, val color: Long) {
+    TMAP("티맵", "티맵으로", "com.skt.tmap.ku", 0xFF0064FF),
+    NAVER("네이버지도", "네이버지도로", "com.nhn.android.nmap", 0xFF03C75A),
+    KAKAO("카카오맵", "카카오맵으로", "net.daum.android.map", 0xFFFFB800),
 }
 
 /** 한 경로의 정보. tollFare == null 이면 통행료 정보를 못 찾은 것 */

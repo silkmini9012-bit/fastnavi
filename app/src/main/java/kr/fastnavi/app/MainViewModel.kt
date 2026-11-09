@@ -327,7 +327,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         return coroutineScope {
             val mainD = async { call(false) }
-            val freeD = if (st.compareFree || st.criterion == Criterion.FREE) async { call(true) } else null
+            val freeD = if (st.compareFree) async { call(true) } else null
             val main = mainD.await()
             val free = freeD?.await()
             AppComparison(
@@ -348,22 +348,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun routeFor(c: AppComparison): RouteInfo? =
-        if (settings.criterion == Criterion.FREE) c.free ?: c.main?.takeIf { it.tollFare == 0 } else c.main
+        c.main // 항상 통행료 포함 가장 빠른 경로 (무료도로는 참고용으로만 표시)
 
     fun etaOf(r: RouteInfo): Long = r.etaMillis ?: (comparedAt + r.durationSec * 1000L)
 
-    /** 도착 예정 시각이 가장 빠른 앱 */
+    /** 소요시간이 가장 짧은 앱 (통행료 포함). 같으면 도착시각이 빠른 쪽 */
     fun fastest(): AppComparison? =
-        results.filter { it.installed && routeFor(it) != null }.minByOrNull { etaOf(routeFor(it)!!) }
+        results.filter { it.installed && it.main != null }
+            .minWithOrNull(compareBy<AppComparison> { it.main!!.durationSec }.thenBy { etaOf(it.main!!) })
 
     // ─────────────────────────── 안내 실행 ───────────────────────────
 
     fun launchNav(app: NavApp) {
         cancelCountdown()
         val g = goal ?: return
-        if (settings.criterion == Criterion.FREE) {
-            message = "${app.label}에서 경로 옵션을 '무료도로'로 선택하세요"
-        }
         NavLauncher.launch(ctx, app, start, g)
         // 경로 화면에 '안내 시작' 버튼이 있으면 대신 눌러줌
         val svc = ScanBus.service ?: return
