@@ -183,27 +183,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val scannedAt = System.currentTimeMillis()
         if (opts.isEmpty()) return fail("화면에서 소요시간을 찾지 못했습니다", texts)
 
-        val infos = opts.map { o ->
-            RouteInfo(
-                durationSec = o.durationMin * 60,
-                distanceM = o.distanceM,
-                tollFare = o.toll,
-                etaMillis = o.arrivalMillis ?: (scannedAt + o.durationMin * 60_000L),
-            )
-        }
-        var main = infos.minBy { it.etaMillis!! }
-        // 통행료를 못 읽었으면 소요시간이 거의 같은(±2분) 다른 후보의 정보로 보충
-        if (main.tollFare == null || main.distanceM == null) {
-            infos.firstOrNull { it !== main && kotlin.math.abs(it.durationSec - main.durationSec) <= 120 }?.let {
-                main = main.copy(tollFare = main.tollFare ?: it.tollFare, distanceM = main.distanceM ?: it.distanceM)
-            }
-        }
-        val free = infos.filter { it.tollFare == 0 }.minByOrNull { it.etaMillis!! }
+        fun info(o: RouteParser.Option) = RouteInfo(
+            durationSec = o.durationMin * 60,
+            distanceM = o.distanceM,
+            tollFare = o.toll,
+            etaMillis = o.arrivalMillis ?: (scannedAt + o.durationMin * 60_000L),
+        )
+        val bestOpt = RouteParser.best(opts)!!
+        val freeOpt = RouteParser.bestFree(opts)
+        val main = info(bestOpt)
+        val free = freeOpt?.takeIf { it.durationMin != bestOpt.durationMin || bestOpt.toll != 0 }?.let { info(it) }
+        val distinct = opts.map { it.durationMin to it.toll }.distinct().size
         return AppComparison(
             app = app, installed = true,
             main = main, mainError = null,
-            free = if (free == null || free == main) null else free, freeError = null,
-            otherCount = infos.size - 1,
+            free = free, freeError = null,
+            otherCount = (distinct - 1).coerceAtLeast(0),
             rawText = texts,
         )
     }

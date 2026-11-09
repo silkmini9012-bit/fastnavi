@@ -19,14 +19,17 @@ object RouteParser {
     private enum class T { DUR, ARR, TOLL, FREE, DIST }
     private data class Tok(val pos: Int, val end: Int, val type: T, val a: Int, val b: Int = 0, val label: String = "")
 
+    // 숫자와 '분'이 화면에서 따로 떨어진 경우("30" ¦ "분")도 인식
     private val DUR = Regex(
-        "(?<!\\d)(?:(\\d{1,2})\\s*시간\\s*)?(\\d{1,3})\\s*분(?!\\s*(?:후|전|마다|간격|이내|이상|거리|정도\\s*후))" +
-            "|(?<!\\d)(\\d{1,2})\\s*시간(?!\\s*(?:\\d|후|전|이내|이상))",
+        "(?<!\\d)(?:(\\d{1,2})[\\s¦]*시간[\\s¦]*)?(\\d{1,3})[\\s¦]*분(?![\\s¦]*(?:후|전|마다|간격|이내|이상|거리|정도\\s*후))" +
+            "|(?<!\\d)(\\d{1,2})[\\s¦]*시간(?![\\s¦]*(?:\\d|후|전|이내|이상))",
     )
     private val ARR_AMPM = Regex("(오전|오후)\\s*(\\d{1,2})\\s*[:시]\\s*(\\d{2})")
     private val ARR_24 = Regex("(?<![\\d:])(\\d{1,2}):(\\d{2})\\s*도착")
-    private val TOLL = Regex("통행료\\s*[:：]?\\s*(?:약\\s*)?([\\d,]{1,9})\\s*원")
-    private val FREE = Regex("통행료\\s*(?:없음|무료|0\\s*원)|무료\\s*도로|(?<![가-힣])무료(?![가-힣])")
+    private val TOLL = Regex("통행료[\\s¦]*[:：]?[\\s¦]*(?:약\\s*)?([\\d,]{1,9})[\\s¦]*원")
+    // 티맵: "16km · 560원" 처럼 거리 바로 뒤에 '통행료' 글자 없이 금액만 표시
+    private val TOLL_AFTER_KM = Regex("\\d(?:km|㎞)[\\s·•ㆍ∙|¦]*([\\d,]{1,7})[\\s¦]*원")
+    private val FREE = Regex("통행료[\\s¦]*(?:없음|무료|0[\\s¦]*원)|무료\\s*도로|(?<![가-힣])무료(?![가-힣])")
     private val DIST = Regex("(?<![\\d.])(\\d{1,4}(?:\\.\\d{1,2})?)\\s*(km|㎞)")
 
     fun parse(texts: List<String>, now: Long = System.currentTimeMillis()): List<Option> {
@@ -52,6 +55,10 @@ object RouteParser {
         }
         TOLL.findAll(s).forEach { m ->
             m.groupValues[1].replace(",", "").toIntOrNull()?.let { toks += Tok(m.range.first, m.range.last, T.TOLL, it) }
+        }
+        TOLL_AFTER_KM.findAll(s).forEach { m ->
+            val g = m.groups[1] ?: return@forEach
+            g.value.replace(",", "").toIntOrNull()?.let { toks += Tok(g.range.first, m.range.last, T.TOLL, it) }
         }
         FREE.findAll(s).forEach { m -> toks += Tok(m.range.first, m.range.last, T.FREE, 0) }
         DIST.findAll(s).forEach { m ->
@@ -96,6 +103,28 @@ object RouteParser {
         }
         return merged
     }
+
+    private fun infoScore(o: Option) =
+        (if (o.toll != null) 2 else 0) + (if (o.distanceM != null) 1 else 0) + (if (o.arrivalMillis != null) 1 else 0)
+
+    /**
+     * 가장 빠른 경로 1개. 같은 소요시간이 여러 번 나오면(위쪽 탭 + 지도 라벨 + 아래 카드)
+     * 정보가 가장 많은 것을 고르고, 빠진 값은 '같은 소요시간'의 다른 후보에서만 채운다.
+     */
+    fun best(opts: List<Option>): Option? {
+        val minDur = opts.minOfOrNull { it.durationMin } ?: return null
+        val same = opts.filter { it.durationMin == minDur }
+        val b = same.maxBy { infoScore(it) }
+        return b.copy(
+            toll = b.toll ?: same.firstNotNullOfOrNull { it.toll },
+            distanceM = b.distanceM ?: same.firstNotNullOfOrNull { it.distanceM },
+            arrivalMillis = b.arrivalMillis ?: same.firstNotNullOfOrNull { it.arrivalMillis },
+        )
+    }
+
+    /** 통행료 0원(무료)으로 확인된 경로 중 가장 빠른 것 */
+    fun bestFree(opts: List<Option>): Option? =
+        opts.filter { it.toll == 0 }.minWithOrNull(compareBy<Option> { it.durationMin }.thenByDescending { infoScore(it) })
 
     /** 오늘 hh:mm 의 시각. 이미 한참 지났으면 내일로 */
     private fun clock(hh: Int, mm: Int, now: Long): Long {
