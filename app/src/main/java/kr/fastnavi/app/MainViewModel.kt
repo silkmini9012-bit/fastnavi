@@ -193,45 +193,65 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) {
             return fail("앱 실행 실패")
         }
-        // 앱이 앞으로 올 때까지
+        // 앱이 앞으로 올 때까지 (0.15초마다 확인)
         var waited = 0
         while (svc.foregroundPackage() != app.pkg) {
             if (waited > 10_000) return fail("앱이 열리지 않았습니다")
-            delay(300); waited += 300
+            delay(150); waited += 150
         }
-        // 경로 결과가 뜰 때까지 읽고, 뜬 뒤에도 5초간 계속 읽어서 합침
-        // (네이버는 카드의 '통행료'와 '연료비'가 2초마다 번갈아 표시됨)
-        val t0 = System.currentTimeMillis()
-        var firstFound = 0L
-        var texts = emptyList<String>()
-        val acc = mutableListOf<RouteParser.Option>()
-        var lastDurations: List<Int>? = null
-        while (System.currentTimeMillis() - t0 < 20_000) {
-            delay(700)
-            if (svc.foregroundPackage() != app.pkg) continue
+        fun read(): Pair<List<String>, List<RouteParser.Option>> {
             val t = svc.collectTexts(app.pkg)
-            val o = RouteParser.parse(t)
-            if (o.isEmpty()) continue
-            if (firstFound == 0L) firstFound = System.currentTimeMillis()
-            val durs = o.map { it.durationMin }
-            if (durs != lastDurations) acc.clear()   // 경로가 새로 그려지면 다시 모음
-            lastDurations = durs
-            acc += o
-            texts = t
-            if (System.currentTimeMillis() - firstFound > 5_000 && RouteParser.best(acc)?.toll != null) break
-            if (System.currentTimeMillis() - firstFound > 7_000) break
+            return t to RouteParser.parse(t)
         }
-        // 그래도 통행료를 못 읽었으면 추천 경로 카드를 눌러 상세 화면에서 읽기
-        if (acc.isNotEmpty() && RouteParser.best(acc)?.toll == null) {
-            val card = Regex("실시간\\s*추천|내비\\s*추천|티맵\\s*추천|추천\\s*경로|추천")
-            if (svc.clickMatching(app.pkg, card)) {
-                for (k in 0 until 5) {
-                    delay(800)
-                    val t = svc.collectTexts(app.pkg)
-                    val o = RouteParser.parse(t)
-                    if (o.isNotEmpty()) {
+
+        // ① 경로 결과가 뜰 때까지 0.25초마다 읽고, 두 번 연속 같으면 확정
+        val acc = mutableListOf<RouteParser.Option>()
+        var texts = emptyList<String>()
+        var prevDurs: List<Int>? = null
+        val t0 = System.currentTimeMillis()
+        while (System.currentTimeMillis() - t0 < 15_000) {
+            delay(250)
+            if (svc.foregroundPackage() != app.pkg) continue
+            val (t, o) = read()
+            if (o.isEmpty()) { prevDurs = null; continue }
+            val durs = o.map { it.durationMin }
+            if (durs == prevDurs) { acc += o; texts = t; break }
+            prevDurs = durs; acc.clear(); acc += o; texts = t
+        }
+        if (acc.isEmpty()) return fail("화면에서 소요시간을 찾지 못했습니다", texts)
+        fun mainToll() = RouteParser.best(acc)?.toll
+
+        // ② 무료도로 경로가 화면에 없으면 경로 카드를 옆으로 넘기며 찾기 (최대 4장)
+        var moved = 0
+        while (RouteParser.bestFree(acc) == null && mainToll() != 0 && moved < 4) {
+            val before = svc.collectTexts(app.pkg)
+            if (!svc.moveRouteCard(app.pkg, forward = true)) break
+            moved++
+            delay(350)
+            val (t, o) = read()
+            acc += o
+            texts = texts + listOf("—다음 카드—") + t
+            if (t == before) break
+        }
+
+        // ③ 추천 경로 통행료를 아직 못 읽었으면 (네이버: 통행료/연료비가 번갈아 표시)
+        if (mainToll() == null) {
+            // 카드를 처음 위치로 되돌리고
+            repeat(moved) { svc.moveRouteCard(app.pkg, forward = false); delay(250) }
+            // 잠깐(최대 1초) 다시 읽어보고, 그래도 없으면 추천 카드를 눌러 상세 화면에서 읽기
+            for (k in 0 until 4) {
+                delay(250)
+                acc += read().second
+                if (mainToll() != null) break
+            }
+            if (mainToll() == null) {
+                val card = Regex("실시간\\s*추천|내비\\s*추천|티맵\\s*추천|추천\\s*경로|추천")
+                if (svc.clickMatching(app.pkg, card)) {
+                    for (k in 0 until 8) {
+                        delay(250)
+                        val (t, o) = read()
                         acc += o
-                        if (RouteParser.best(acc)?.toll != null) {
+                        if (mainToll() != null) {
                             texts = texts + listOf("—상세화면—") + t
                             break
                         }
@@ -241,7 +261,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         val opts: List<RouteParser.Option> = acc
         val scannedAt = System.currentTimeMillis()
-        if (opts.isEmpty()) return fail("화면에서 소요시간을 찾지 못했습니다", texts)
 
         fun info(o: RouteParser.Option) = RouteInfo(
             durationSec = o.durationMin * 60,
@@ -253,11 +272,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val freeOpt = RouteParser.bestFree(opts)
         val main = info(bestOpt)
         val free = freeOpt?.takeIf { it.durationMin != bestOpt.durationMin || bestOpt.toll != 0 }?.let { info(it) }
+        val freeError = when {
+            free != null -> null
+            bestOpt.toll == 0 -> "기본 경로가 이미 무료"
+            else -> "이 앱 화면에서 무료도로 경로를 찾지 못함"
+        }
         val distinct = opts.filter { it.distanceM != null }.map { it.durationMin to it.distanceM }.distinct().size.coerceAtLeast(1)
         return AppComparison(
             app = app, installed = true,
             main = main, mainError = null,
-            free = free, freeError = null,
+            free = free, freeError = freeError,
             otherCount = (distinct - 1).coerceAtLeast(0),
             rawText = texts,
         )

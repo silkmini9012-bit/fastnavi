@@ -456,7 +456,9 @@ private fun AppCard(vm: MainViewModel, c: AppComparison, isBest: Boolean, maxDur
                 Spacer(Modifier.height(6.dp))
                 Text(
                     when {
-                        saved >= 60 -> "💡 통행료 ${Fmt.won(m.tollFare ?: 0)} 내면 ${Fmt.duration(saved)} 빨라요"
+                        saved >= 60 -> "💡 통행료 ${Fmt.won(m.tollFare ?: 0)} 내면 ${Fmt.duration(saved)} 빨라요" +
+                            (if (m.distanceM != null && f.distanceM != null && f.distanceM != m.distanceM)
+                                " (무료도로는 ${Fmt.distance(f.distanceM)}, ${if (f.distanceM > m.distanceM) "더 길어요" else "더 짧아요"})" else "")
                         else -> "💡 무료도로로 가도 시간 차이가 거의 없어요"
                     },
                     fontSize = 13.sp, color = Color(0xFF5F6368),
@@ -506,7 +508,7 @@ private fun RouteLine(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, fontSize = 12.sp, color = Color.Gray, modifier = Modifier.width(56.dp))
             if (r == null) {
-                Text(err ?: "-", fontSize = 13.sp, color = TollRed, modifier = Modifier.weight(1f))
+                Text(err ?: "-", fontSize = 13.sp, color = if (title == "무료도로") Color.Gray else TollRed, modifier = Modifier.weight(1f))
                 return@Row
             }
             Text(
