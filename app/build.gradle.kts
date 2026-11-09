@@ -12,11 +12,26 @@ android {
         applicationId = "kr.fastnavi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // GitHub 빌드 번호를 버전으로 → 새 APK를 기존 앱 위에 업데이트 설치 가능
+        val build = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionCode = build
+        versionName = "1.$build"
+    }
+
+    // 항상 같은 서명키로 서명 → 지우지 않고 업데이트 설치 가능 (접근성 권한 유지)
+    signingConfigs {
+        create("fixed") {
+            storeFile = file("fastnavi.keystore")
+            storePassword = "fastnavi123"
+            keyAlias = "fastnavi"
+            keyPassword = "fastnavi123"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("fixed")
+        }
         release {
             isMinifyEnabled = false
         }

@@ -67,17 +67,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         results = emptyList()
     }
 
+    fun togglePin(p: Place) { prefs.togglePin(p); recentGoals = prefs.recentGoals() }
+    fun removeRecent(p: Place) { prefs.removeRecent(p); recentGoals = prefs.recentGoals() }
+
     fun clearSearch() {
         searchResults = emptyList(); searchError = null
     }
 
+    /** 내 위치 (검색 결과 거리 표시·가까운 곳 우선용) */
+    var myLocation by mutableStateOf<Place?>(null); private set
+    fun refreshMyLocation() {
+        viewModelScope.launch {
+            LocationHelper.current(ctx)?.let {
+                myLocation = Place("내 위치", "", it.latitude, it.longitude, true)
+                lastLocation = myLocation
+            }
+        }
+    }
+
+    private var searchJob: Job? = null
+    /** 입력할 때마다 호출: 0.35초 동안 입력이 멈추면 검색 */
+    fun searchAsYouType(query: String) {
+        searchJob?.cancel()
+        if (query.isBlank()) { clearSearch(); return }
+        searchJob = viewModelScope.launch {
+            delay(350)
+            doSearch(query)
+        }
+    }
+
     fun search(query: String) {
         if (query.isBlank()) return
-        viewModelScope.launch {
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch { doSearch(query) }
+    }
+
+    private suspend fun doSearch(query: String) {
+        run {
             searching = true; searchError = null
             try {
                 searchResults = PlaceSearch.search(ctx, query.trim(), settings.kakaoKey, settings.tmapKey, lastLocation)
                 if (searchResults.isEmpty()) searchError = "검색 결과가 없습니다. 주소(예: 다산순환로 220)나 다른 이름으로 검색해 보세요."
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 searchResults = emptyList()
                 searchError = e.message
@@ -167,19 +199,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (waited > 10_000) return fail("앱이 열리지 않았습니다")
             delay(300); waited += 300
         }
-        // 경로 결과가 뜨고 내용이 안정될 때까지 읽기 (최대 18초)
+        // 경로 결과가 뜰 때까지 읽고, 뜬 뒤에도 5초간 계속 읽어서 합침
+        // (네이버는 카드의 '통행료'와 '연료비'가 2초마다 번갈아 표시됨)
         val t0 = System.currentTimeMillis()
-        var prev: List<RouteParser.Option>? = null
+        var firstFound = 0L
         var texts = emptyList<String>()
-        var opts = emptyList<RouteParser.Option>()
-        while (System.currentTimeMillis() - t0 < 18_000) {
-            delay(900)
+        val acc = mutableListOf<RouteParser.Option>()
+        var lastDurations: List<Int>? = null
+        while (System.currentTimeMillis() - t0 < 20_000) {
+            delay(700)
             if (svc.foregroundPackage() != app.pkg) continue
-            texts = svc.collectTexts(app.pkg)
-            opts = RouteParser.parse(texts)
-            if (opts.isNotEmpty() && opts == prev && System.currentTimeMillis() - t0 > 2_500) break
-            prev = opts
+            val t = svc.collectTexts(app.pkg)
+            val o = RouteParser.parse(t)
+            if (o.isEmpty()) continue
+            if (firstFound == 0L) firstFound = System.currentTimeMillis()
+            val durs = o.map { it.durationMin }
+            if (durs != lastDurations) acc.clear()   // 경로가 새로 그려지면 다시 모음
+            lastDurations = durs
+            acc += o
+            texts = t
+            if (System.currentTimeMillis() - firstFound > 5_000 && RouteParser.best(acc)?.toll != null) break
+            if (System.currentTimeMillis() - firstFound > 7_000) break
         }
+        // 그래도 통행료를 못 읽었으면 추천 경로 카드를 눌러 상세 화면에서 읽기
+        if (acc.isNotEmpty() && RouteParser.best(acc)?.toll == null) {
+            val card = Regex("실시간\\s*추천|내비\\s*추천|티맵\\s*추천|추천\\s*경로|추천")
+            if (svc.clickMatching(app.pkg, card)) {
+                for (k in 0 until 5) {
+                    delay(800)
+                    val t = svc.collectTexts(app.pkg)
+                    val o = RouteParser.parse(t)
+                    if (o.isNotEmpty()) {
+                        acc += o
+                        if (RouteParser.best(acc)?.toll != null) {
+                            texts = texts + listOf("—상세화면—") + t
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        val opts: List<RouteParser.Option> = acc
         val scannedAt = System.currentTimeMillis()
         if (opts.isEmpty()) return fail("화면에서 소요시간을 찾지 못했습니다", texts)
 
@@ -193,7 +253,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val freeOpt = RouteParser.bestFree(opts)
         val main = info(bestOpt)
         val free = freeOpt?.takeIf { it.durationMin != bestOpt.durationMin || bestOpt.toll != 0 }?.let { info(it) }
-        val distinct = opts.map { it.durationMin to it.toll }.distinct().size
+        val distinct = opts.filter { it.distanceM != null }.map { it.durationMin to it.distanceM }.distinct().size.coerceAtLeast(1)
         return AppComparison(
             app = app, installed = true,
             main = main, mainError = null,

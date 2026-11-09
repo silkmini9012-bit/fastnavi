@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -39,6 +40,9 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -164,6 +168,7 @@ private fun MainScreen(vm: MainViewModel, onSettings: () -> Unit, onSearch: (Tar
                 item { SetupCard() }
             }
             item { PlaceInputCard(vm, onSearch) }
+            if (vm.recentGoals.isNotEmpty()) item { QuickGoals(vm) }
             item { CriterionRow(vm) }
             item {
                 Button(
@@ -295,6 +300,23 @@ private fun PlaceRow(label: String, text: String, placeholder: Boolean, dot: Col
             fontWeight = if (placeholder) FontWeight.Normal else FontWeight.SemiBold,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+/** 즐겨찾기(★)와 최근 목적지 바로 선택 */
+@Composable
+private fun QuickGoals(vm: MainViewModel) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        vm.recentGoals.take(10).forEach { p ->
+            FilterChip(
+                selected = vm.goal?.let { it.name == p.name && it.address == p.address } == true,
+                onClick = { vm.setPlace(Target.GOAL, p) },
+                label = { Text((if (p.pinned) "★ " else "") + p.name, maxLines = 1) },
+            )
+        }
     }
 }
 
@@ -518,9 +540,19 @@ private fun SearchScreen(vm: MainViewModel, target: Target, onBack: () -> Unit) 
     var query by rememberSaveable { mutableStateOf("") }
     BackHandler(onBack = onBack)
 
+    // 가까운 곳 우선 표시용 위치 (권한이 없으면 한 번 요청)
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { granted -> if (granted.values.any { it }) vm.useCurrentLocation(target, onBack) }
+    ) { granted -> if (granted.values.any { it }) vm.refreshMyLocation() }
+    LaunchedEffect(Unit) {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) vm.refreshMyLocation()
+        else permLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+    }
+    fun pick(p: Place) { vm.setPlace(target, p); onBack() }
 
     Scaffold(
         topBar = {
@@ -535,38 +567,78 @@ private fun SearchScreen(vm: MainViewModel, target: Target, onBack: () -> Unit) 
         Column(Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp)) {
             OutlinedTextField(
                 value = query,
-                onValueChange = { query = it },
+                onValueChange = { query = it; vm.searchAsYouType(it) },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("주소나 장소 (예: 다산순환로 220, 강남역)") },
+                placeholder = { Text("장소, 주소 (한 글자부터 검색)") },
                 singleLine = true,
                 trailingIcon = {
-                    IconButton(onClick = { vm.search(query) }) { Icon(Icons.Default.Search, "검색") }
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = ""; vm.clearSearch() }) { Icon(Icons.Default.Close, "지우기") }
+                    } else Icon(Icons.Default.Search, null)
                 },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { vm.search(query) }),
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
             if (vm.searching) LinearProgressIndicator(Modifier.fillMaxWidth())
-            vm.searchError?.let { Text(it, color = TollRed, modifier = Modifier.padding(vertical = 8.dp)) }
+            if (query.isNotBlank()) {
+                vm.searchError?.let { Text(it, color = TollRed, fontSize = 13.sp, modifier = Modifier.padding(vertical = 8.dp)) }
+            }
 
             LazyColumn {
-                if (target == Target.START) item {
+                if (target == Target.START && query.isBlank()) item {
                     ResultRow(Icons.Default.LocationOn, "현재 위치", "내비 앱이 지금 위치에서 출발") {
                         vm.useCurrentLocation(Target.START, onBack)
                     }
                 }
-                if (vm.searchResults.isEmpty() && vm.recentGoals.isNotEmpty()) {
-                    item { Text("최근 목적지", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp)) }
-                    items(vm.recentGoals) { p ->
-                        ResultRow(Icons.Default.Place, p.name, p.address) { vm.setPlace(target, p); onBack() }
+                if (query.isBlank()) {
+                    if (vm.recentGoals.isNotEmpty()) {
+                        item {
+                            Text("즐겨찾기 · 최근 목적지  (★ 고정, ✕ 삭제)", color = Color.Gray, fontSize = 13.sp,
+                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+                        }
                     }
-                }
-                items(vm.searchResults) { p ->
-                    ResultRow(Icons.Default.Place, p.name, p.address) { vm.setPlace(target, p); onBack() }
+                    items(vm.recentGoals, key = { "r_" + it.name + it.address }) { p ->
+                        RecentRow(
+                            p,
+                            distance = vm.myLocation?.let { Fmt.meters(it, p) },
+                            onClick = { pick(p) },
+                            onPin = { vm.togglePin(p) },
+                            onDelete = { vm.removeRecent(p) },
+                        )
+                    }
+                } else {
+                    items(vm.searchResults) { p ->
+                        val d = vm.myLocation?.let { Fmt.meters(it, p) }
+                        ResultRow(
+                            Icons.Default.Place, p.name,
+                            listOfNotNull(p.address.ifBlank { null }, d?.let { Fmt.distance(it) }).joinToString("  ·  "),
+                        ) { pick(p) }
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun RecentRow(p: Place, distance: Int?, onClick: () -> Unit, onPin: () -> Unit, onDelete: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onPin) {
+            Icon(
+                if (p.pinned) Icons.Filled.Star else Icons.Outlined.Star,
+                if (p.pinned) "고정 해제" else "고정",
+                tint = if (p.pinned) Color(0xFFFFB800) else Color(0xFFBDBDBD),
+            )
+        }
+        Column(Modifier.weight(1f)) {
+            Text(p.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val sub = listOfNotNull(p.address.ifBlank { null }, distance?.let { Fmt.distance(it) }).joinToString("  ·  ")
+            if (sub.isNotBlank()) Text(sub, fontSize = 13.sp, color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        IconButton(onClick = onDelete) { Icon(Icons.Default.Close, "삭제", tint = Color.Gray) }
+    }
+    HorizontalDivider(color = Color(0xFFEDEFF3))
 }
 
 @Composable
@@ -651,6 +723,19 @@ private fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
             Button(onClick = { vm.saveSettings(s); onBack() }, modifier = Modifier.fillMaxWidth()) { Text("저장") }
+
+            SectionTitle("업데이트")
+            val ctx = LocalContext.current
+            val ver = remember { runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: "?" }
+            Text("현재 버전 $ver · 새 버전은 지우지 않고 그대로 설치하면 업데이트돼요.", fontSize = 13.sp, color = Color.Gray)
+            OutlinedButton(
+                onClick = {
+                    ctx.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/silkmini9012-bit/fastnavi/releases/latest/download/FastNavi.apk")),
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("최신 버전 받기") }
         }
     }
 }

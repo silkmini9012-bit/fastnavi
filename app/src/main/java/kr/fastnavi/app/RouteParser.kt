@@ -93,7 +93,8 @@ object RouteParser {
         val merged = mutableListOf<Option>()
         for (o in opts) {
             val p = merged.lastOrNull()
-            if (p != null && p.durationMin == o.durationMin) {
+            // 앞의 것이 정보 없는 라벨/탭일 때만 합침 (같은 시간의 서로 다른 경로 카드는 따로 유지)
+            if (p != null && p.durationMin == o.durationMin && p.distanceM == null && p.toll == null) {
                 merged[merged.size - 1] = p.copy(
                     arrivalMillis = p.arrivalMillis ?: o.arrivalMillis,
                     toll = p.toll ?: o.toll,
@@ -108,17 +109,21 @@ object RouteParser {
         (if (o.toll != null) 2 else 0) + (if (o.distanceM != null) 1 else 0) + (if (o.arrivalMillis != null) 1 else 0)
 
     /**
-     * 가장 빠른 경로 1개. 같은 소요시간이 여러 번 나오면(위쪽 탭 + 지도 라벨 + 아래 카드)
-     * 정보가 가장 많은 것을 고르고, 빠진 값은 '같은 소요시간'의 다른 후보에서만 채운다.
+     * 가장 빠른 경로 1개.
+     * 같은 소요시간이 여러 번 나오면(위쪽 탭 + 지도 라벨 + 아래 카드) 화면에서 먼저 나온 '카드'(거리가 있는 것)를
+     * 그 앱의 추천 경로로 보고, 빠진 통행료는 '같은 시간 + 같은 거리'인 후보에서만 채운다.
+     * (예: 네이버는 같은 32분이라도 추천 16km/560원, 무료우선 17km/0원 → 섞이지 않게)
      */
     fun best(opts: List<Option>): Option? {
         val minDur = opts.minOfOrNull { it.durationMin } ?: return null
         val same = opts.filter { it.durationMin == minDur }
-        val b = same.maxBy { infoScore(it) }
-        return b.copy(
-            toll = b.toll ?: same.firstNotNullOfOrNull { it.toll },
-            distanceM = b.distanceM ?: same.firstNotNullOfOrNull { it.distanceM },
-            arrivalMillis = b.arrivalMillis ?: same.firstNotNullOfOrNull { it.arrivalMillis },
+        val p = same.firstOrNull { it.distanceM != null } ?: same.firstOrNull { it.toll != null } ?: same.first()
+        fun compatible(o: Option) = p.distanceM == null || o.distanceM == null || o.distanceM == p.distanceM
+        return p.copy(
+            toll = p.toll ?: same.firstOrNull { it.toll != null && it.distanceM != null && compatible(it) }?.toll
+                ?: same.firstOrNull { it.toll != null && compatible(it) && it.toll != 0 }?.toll,
+            distanceM = p.distanceM ?: same.firstNotNullOfOrNull { it.distanceM },
+            arrivalMillis = p.arrivalMillis ?: same.firstNotNullOfOrNull { it.arrivalMillis },
         )
     }
 

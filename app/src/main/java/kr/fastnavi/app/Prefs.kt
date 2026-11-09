@@ -47,21 +47,42 @@ class Prefs(context: Context) {
             .apply()
     }
 
-    // 최근 목적지 (최대 5개)
+    // 최근 목적지: 고정(★)은 개수 제한 없이 맨 위, 나머지는 최근 순 최대 8개
     fun recentGoals(): List<Place> =
         sp.getString("recent", "").orEmpty().split("\n").filter { it.isNotBlank() }.mapNotNull { line ->
             val p = line.split("\t")
-            if (p.size < 4) null
-            else Place(p[0], p[1], p[2].toDoubleOrNull() ?: return@mapNotNull null,
-                p[3].toDoubleOrNull() ?: return@mapNotNull null)
-        }
+            if (p.size < 4) return@mapNotNull null
+            Place(
+                name = p[0], address = p[1],
+                lat = p[2].toDoubleOrNull() ?: return@mapNotNull null,
+                lng = p[3].toDoubleOrNull() ?: return@mapNotNull null,
+                pinned = p.getOrNull(4) == "1",
+            )
+        }.sortedByDescending { it.pinned }
 
-    fun addRecentGoal(place: Place) {
-        val list = (listOf(place) + recentGoals().filterNot { it.name == place.name && it.address == place.address })
-            .take(5)
-        val text = list.joinToString("\n") {
-            listOf(it.name.replace("\t", " "), it.address.replace("\t", " "), it.lat, it.lng).joinToString("\t")
+    private fun same(a: Place, b: Place) = a.name == b.name && a.address == b.address
+
+    private fun saveList(list: List<Place>) {
+        val pinned = list.filter { it.pinned }
+        val others = list.filterNot { it.pinned }.take(8)
+        val text = (pinned + others).joinToString("\n") {
+            listOf(
+                it.name.replace("\t", " ").replace("\n", " "),
+                it.address.replace("\t", " ").replace("\n", " "),
+                it.lat, it.lng, if (it.pinned) "1" else "0",
+            ).joinToString("\t")
         }
         sp.edit().putString("recent", text).apply()
     }
+
+    fun addRecentGoal(place: Place) {
+        val old = recentGoals()
+        val wasPinned = old.any { same(it, place) && it.pinned }
+        saveList(listOf(place.copy(pinned = wasPinned, isCurrentLocation = false)) + old.filterNot { same(it, place) })
+    }
+
+    fun togglePin(place: Place) =
+        saveList(recentGoals().map { if (same(it, place)) it.copy(pinned = !it.pinned) else it })
+
+    fun removeRecent(place: Place) = saveList(recentGoals().filterNot { same(it, place) })
 }

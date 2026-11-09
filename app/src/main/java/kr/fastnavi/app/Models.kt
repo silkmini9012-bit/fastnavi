@@ -7,6 +7,7 @@ data class Place(
     val lat: Double,
     val lng: Double,
     val isCurrentLocation: Boolean = false,
+    val pinned: Boolean = false,
 )
 
 enum class NavApp(val label: String, val pkg: String, val color: Long) {

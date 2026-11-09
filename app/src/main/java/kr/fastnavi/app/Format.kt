@@ -24,5 +24,15 @@ object Fmt {
     fun distance(m: Int): String =
         if (m >= 1000) String.format(Locale.KOREA, "%.1fkm", m / 1000.0) else "${m}m"
 
+    /** 두 지점 직선거리(m) */
+    fun meters(a: Place, b: Place): Int {
+        val r = 6371000.0
+        val dLat = Math.toRadians(b.lat - a.lat)
+        val dLng = Math.toRadians(b.lng - a.lng)
+        val h = Math.sin(dLat / 2).let { it * it } +
+            Math.cos(Math.toRadians(a.lat)) * Math.cos(Math.toRadians(b.lat)) * Math.sin(dLng / 2).let { it * it }
+        return (2 * r * Math.asin(Math.sqrt(h))).toInt()
+    }
+
     fun won(v: Int): String = String.format(Locale.KOREA, "%,d원", v)
 }

@@ -24,7 +24,44 @@ object PlaceSearch {
     ): List<Place> = when {
         kakaoKey.isNotBlank() -> kakao(query, kakaoKey, near)
         tmapKey.isNotBlank() -> tmap(query, tmapKey)
-        else -> geocoder(context, query)
+        else -> keyless(context, query, near)
+    }
+
+    /**
+     * 키 없이: 오픈스트리트맵 기반 Photon 자동완성(한 글자부터, 내 위치 가까운 곳 우선)
+     * + 주소처럼 보이면(숫자 포함) 폰 내장 주소검색 결과를 앞에.
+     */
+    private suspend fun keyless(context: Context, query: String, near: Place?): List<Place> {
+        val looksLikeAddress = query.any { it.isDigit() } || Regex("(로|길|동|읍|면)\\s*$").containsMatchIn(query)
+        val photon = runCatching { photon(query, near) }
+        val geo = if (looksLikeAddress || photon.getOrNull().isNullOrEmpty()) {
+            runCatching { geocoder(context, query) }.getOrDefault(emptyList())
+        } else emptyList()
+        val merged = (geo + photon.getOrDefault(emptyList()))
+            .distinctBy { "%.4f,%.4f".format(it.lat, it.lng) }
+        if (merged.isEmpty()) photon.exceptionOrNull()?.let { throw it }
+        return merged
+    }
+
+    private suspend fun photon(query: String, near: Place?): List<Place> {
+        val url = buildString {
+            append("https://photon.komoot.io/api/?limit=15&q=${enc(query)}")
+            if (near != null) append("&lat=${near.lat}&lon=${near.lng}&location_bias_scale=0.5")
+            else append("&lat=37.5665&lon=126.9780") // 기본: 서울 중심
+        }
+        val json = Http.get(url, mapOf("User-Agent" to "FastNavi-Android"))
+        val arr = json.optJSONArray("features") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val f = arr.optJSONObject(i) ?: return@mapNotNull null
+            val c = f.optJSONObject("geometry")?.optJSONArray("coordinates") ?: return@mapNotNull null
+            val p = f.optJSONObject("properties") ?: return@mapNotNull null
+            if (p.optString("countrycode").let { it.isNotBlank() && it != "KR" }) return@mapNotNull null
+            val street = listOf(p.optString("street"), p.optString("housenumber")).filter { it.isNotBlank() }.joinToString(" ")
+            val name = p.optString("name").ifBlank { street }.ifBlank { return@mapNotNull null }
+            val addr = listOf(p.optString("state"), p.optString("city"), p.optString("district"), street)
+                .filter { it.isNotBlank() && it != name }.distinct().joinToString(" ")
+            Place(name = name, address = addr, lat = c.optDouble(1), lng = c.optDouble(0))
+        }
     }
 
     @Suppress("DEPRECATION")
