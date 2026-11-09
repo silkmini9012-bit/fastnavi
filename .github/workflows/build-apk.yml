@@ -11,6 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -25,12 +26,12 @@ jobs:
             java -version
             chmod +x gradlew
             # Gradle 배포판 다운로드가 일시적으로 실패하는 경우 재시도
-            for i in 1 2 3 4 5; do ./gradlew --no-daemon --version && break; echo "retry $i"; sleep 20; done
+            for i in $(seq 1 15); do ./gradlew --no-daemon --version >/dev/null 2>&1 && break; echo "gradle download retry $i"; sleep 45; done
             echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > local.properties
             ok=0
-            for i in 1 2 3 4; do
+            for i in $(seq 1 8); do
               if ./gradlew --no-daemon assembleDebug; then ok=1; break; fi
-              echo "build retry $i"; sleep 30
+              echo "build retry $i"; sleep 45
             done
             [ "$ok" = 1 ]
           } 2>&1 | tee build.log
