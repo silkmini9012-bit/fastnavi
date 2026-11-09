@@ -18,6 +18,9 @@ object Fmt {
     fun eta(durationSec: Int, from: Long = System.currentTimeMillis()): String =
         SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date(from + durationSec * 1000L))
 
+    fun clock(millis: Long): String =
+        SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date(millis))
+
     fun distance(m: Int): String =
         if (m >= 1000) String.format(Locale.KOREA, "%.1fkm", m / 1000.0) else "${m}m"
 

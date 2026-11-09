@@ -1,13 +1,22 @@
 package kr.fastnavi.app.api
 
+import android.content.Context
+import android.location.Geocoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kr.fastnavi.app.ApiException
 import kr.fastnavi.app.Place
 import java.net.URLEncoder
+import java.util.Locale
 
-/** 장소 검색: 카카오 로컬 키워드 검색 우선, 카카오 키가 없으면 TMAP POI 검색 */
+/**
+ * 장소 검색: 키가 없으면 폰에 내장된 주소/장소 검색(Geocoder) 사용.
+ * (카카오/TMAP 키를 넣어두면 그쪽 장소 검색을 우선 사용)
+ */
 object PlaceSearch {
 
     suspend fun search(
+        context: Context,
         query: String,
         kakaoKey: String,
         tmapKey: String,
@@ -15,7 +24,24 @@ object PlaceSearch {
     ): List<Place> = when {
         kakaoKey.isNotBlank() -> kakao(query, kakaoKey, near)
         tmapKey.isNotBlank() -> tmap(query, tmapKey)
-        else -> throw ApiException("장소 검색에는 카카오 REST 키 또는 TMAP 앱키가 필요합니다")
+        else -> geocoder(context, query)
+    }
+
+    @Suppress("DEPRECATION")
+    private suspend fun geocoder(context: Context, query: String): List<Place> = withContext(Dispatchers.IO) {
+        if (!Geocoder.isPresent()) throw ApiException("이 폰에는 내장 주소 검색이 없습니다")
+        val list = try {
+            Geocoder(context, Locale.KOREA).getFromLocationName(query, 10).orEmpty()
+        } catch (e: Exception) {
+            throw ApiException("주소 검색 실패 (인터넷 연결 확인): ${e.message ?: ""}")
+        }
+        list.map { a ->
+            val line = a.getAddressLine(0).orEmpty().removePrefix("대한민국 ").trim()
+            val feature = a.featureName.orEmpty()
+            // 장소명이 번지수만이면 검색어를 이름으로
+            val name = if (feature.isBlank() || feature.all { it.isDigit() || it == '-' }) query else feature
+            Place(name = name, address = line, lat = a.latitude, lng = a.longitude)
+        }.distinctBy { "%.5f,%.5f".format(it.lat, it.lng) }
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")

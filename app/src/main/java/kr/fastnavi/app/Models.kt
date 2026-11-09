@@ -15,16 +15,17 @@ enum class NavApp(val label: String, val pkg: String, val color: Long) {
     KAKAO("카카오맵", "net.daum.android.map", 0xFFFFB800),
 }
 
-/** 한 앱의 한 경로(기본 or 무료도로) 탐색 결과 */
+/** 한 경로의 정보. tollFare == null 이면 통행료 정보를 못 찾은 것 */
 data class RouteInfo(
     val durationSec: Int,
-    val distanceM: Int,
-    val tollFare: Int,
+    val distanceM: Int?,
+    val tollFare: Int?,
     val taxiFare: Int? = null,
     val fuelPrice: Int? = null,
+    val etaMillis: Long? = null,
 )
 
-/** 앱별 비교 결과: 기본 경로 + (선택) 무료도로 경로 */
+/** 앱별 비교 결과 */
 data class AppComparison(
     val app: NavApp,
     val installed: Boolean,
@@ -32,12 +33,20 @@ data class AppComparison(
     val mainError: String?,
     val free: RouteInfo?,
     val freeError: String?,
+    val otherCount: Int = 0,
+    val rawText: List<String> = emptyList(),
 )
 
 /** 가장 빠른 앱을 고르는 기준 */
 enum class Criterion(val label: String) {
-    DEFAULT("기본 경로(유료도로 포함)"),
+    DEFAULT("가장 빠른 길 (유료도로 포함)"),
     FREE("무료도로 경로"),
+}
+
+/** 비교 방식 */
+enum class Mode(val label: String) {
+    SCREEN("세 앱을 직접 실행해서 화면 읽기 (키 필요 없음)"),
+    API("각 사 API로 조회 (API 키 필요)"),
 }
 
 class ApiException(message: String) : Exception(message)

@@ -1,6 +1,7 @@
 package kr.fastnavi.app
 
 import android.app.Application
+import android.content.Intent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -24,24 +25,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
 
     var settings by mutableStateOf(prefs.load()); private set
+    /** null = 현재 위치 */
     var start by mutableStateOf<Place?>(null); private set
     var goal by mutableStateOf<Place?>(null); private set
 
     var comparing by mutableStateOf(false); private set
+    var progress by mutableStateOf<String?>(null); private set
     var results by mutableStateOf<List<AppComparison>>(emptyList()); private set
     var comparedAt by mutableStateOf(0L); private set
     var message by mutableStateOf<String?>(null)
 
-    // 장소 검색
     var searchResults by mutableStateOf<List<Place>>(emptyList()); private set
     var searching by mutableStateOf(false); private set
     var searchError by mutableStateOf<String?>(null); private set
     var recentGoals by mutableStateOf(prefs.recentGoals()); private set
 
-    // 자동 실행 카운트다운
     var countdown by mutableStateOf<Int?>(null); private set
     private var countdownJob: Job? = null
-
     private var lastLocation: Place? = null
 
     fun saveSettings(s: Settings) {
@@ -49,8 +49,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         settings = prefs.load()
     }
 
-    fun setPlace(target: Target, place: Place) {
-        if (target == Target.START) start = place else {
+    fun setPlace(target: Target, place: Place?) {
+        if (target == Target.START) start = place else if (place != null) {
             goal = place
             prefs.addRecentGoal(place)
             recentGoals = prefs.recentGoals()
@@ -60,7 +60,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun swap() {
-        val s = start; start = goal; goal = s
+        val g = goal ?: return
+        val s = start
+        goal = s ?: run { message = "출발지가 현재 위치라서 바꿀 수 없어요"; return }
+        start = g
         results = emptyList()
     }
 
@@ -73,8 +76,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             searching = true; searchError = null
             try {
-                searchResults = PlaceSearch.search(query.trim(), settings.kakaoKey, settings.tmapKey, lastLocation)
-                if (searchResults.isEmpty()) searchError = "검색 결과가 없습니다"
+                searchResults = PlaceSearch.search(ctx, query.trim(), settings.kakaoKey, settings.tmapKey, lastLocation)
+                if (searchResults.isEmpty()) searchError = "검색 결과가 없습니다. 주소(예: 다산순환로 220)나 다른 이름으로 검색해 보세요."
             } catch (e: Exception) {
                 searchResults = emptyList()
                 searchError = e.message
@@ -84,8 +87,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 위치 권한 획득 후 호출 */
+    /** 위치 권한 획득 후 호출 (API 방식에서만 좌표가 필요) */
     fun useCurrentLocation(target: Target, onDone: () -> Unit) {
+        if (target == Target.START) {
+            setPlace(Target.START, null); onDone(); return
+        }
         viewModelScope.launch {
             searching = true
             val loc = LocationHelper.current(ctx)
@@ -94,104 +100,202 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 searchError = "현재 위치를 가져올 수 없습니다. 위치(GPS)가 켜져 있는지 확인하세요."
                 return@launch
             }
-            val p = Place("현재 위치", "", loc.latitude, loc.longitude, isCurrentLocation = true)
-            lastLocation = p
-            setPlace(target, p)
+            setPlace(target, Place("현재 위치", "", loc.latitude, loc.longitude, isCurrentLocation = true))
             onDone()
         }
     }
 
-    /** 출발지가 비어 있으면 현재 위치로 채운 뒤 비교 */
+    // ─────────────────────────── 비교 ───────────────────────────
+
     fun compare(hasLocationPermission: Boolean) {
         val g = goal ?: run { message = "도착지를 입력하세요"; return }
-        val keyed = NavApp.entries.filter { settings.hasKey(it) }
-        if (keyed.isEmpty()) {
-            message = "설정에서 API 키를 하나 이상 입력하세요"; return
-        }
         cancelCountdown()
+        if (settings.mode == Mode.SCREEN) compareByScreen(g) else compareByApi(g, hasLocationPermission)
+    }
+
+    private val installedApps get() = NavApp.entries.filter { NavLauncher.isInstalled(ctx, it) }
+
+    /** 방식 1: 세 앱을 차례로 실행해서 결과 화면 읽기 */
+    private fun compareByScreen(g: Place) {
+        val svc = ScanBus.service ?: run {
+            message = "먼저 위쪽의 '접근성 권한 켜기'를 완료하세요"; return
+        }
+        val apps = installedApps
+        if (apps.isEmpty()) { message = "티맵·네이버지도·카카오맵 중 설치된 앱이 없습니다"; return }
+        viewModelScope.launch {
+            comparing = true
+            val out = mutableListOf<AppComparison>()
+            try {
+                apps.forEachIndexed { i, app ->
+                    progress = "${app.label} 경로 확인 중… (${i + 1}/${apps.size})"
+                    out += scanApp(svc, app, start, g)
+                }
+                NavApp.entries.filter { it !in apps }.forEach {
+                    out += AppComparison(it, false, null, "설치되지 않음", null, null)
+                }
+            } finally {
+                comparing = false
+                progress = null
+                // 우리 앱을 다시 앞으로
+                runCatching {
+                    svc.startActivity(
+                        Intent(svc, MainActivity::class.java).addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                        ),
+                    )
+                }
+            }
+            results = out
+            comparedAt = System.currentTimeMillis()
+            afterCompare()
+        }
+    }
+
+    private suspend fun scanApp(svc: ScanService, app: NavApp, s: Place?, g: Place): AppComparison {
+        fun fail(msg: String, raw: List<String> = emptyList()) =
+            AppComparison(app, true, null, msg, null, null, rawText = raw)
+
+        try {
+            svc.startActivity(NavLauncher.intentFor(app, NavLauncher.scanUri(ctx, app, s, g)))
+        } catch (e: Exception) {
+            return fail("앱 실행 실패")
+        }
+        // 앱이 앞으로 올 때까지
+        var waited = 0
+        while (svc.foregroundPackage() != app.pkg) {
+            if (waited > 10_000) return fail("앱이 열리지 않았습니다")
+            delay(300); waited += 300
+        }
+        // 경로 결과가 뜨고 내용이 안정될 때까지 읽기 (최대 18초)
+        val t0 = System.currentTimeMillis()
+        var prev: List<RouteParser.Option>? = null
+        var texts = emptyList<String>()
+        var opts = emptyList<RouteParser.Option>()
+        while (System.currentTimeMillis() - t0 < 18_000) {
+            delay(900)
+            if (svc.foregroundPackage() != app.pkg) continue
+            texts = svc.collectTexts(app.pkg)
+            opts = RouteParser.parse(texts)
+            if (opts.isNotEmpty() && opts == prev && System.currentTimeMillis() - t0 > 2_500) break
+            prev = opts
+        }
+        val scannedAt = System.currentTimeMillis()
+        if (opts.isEmpty()) return fail("화면에서 소요시간을 찾지 못했습니다", texts)
+
+        val infos = opts.map { o ->
+            RouteInfo(
+                durationSec = o.durationMin * 60,
+                distanceM = o.distanceM,
+                tollFare = o.toll,
+                etaMillis = o.arrivalMillis ?: (scannedAt + o.durationMin * 60_000L),
+            )
+        }
+        var main = infos.minBy { it.etaMillis!! }
+        // 통행료를 못 읽었으면 소요시간이 거의 같은(±2분) 다른 후보의 정보로 보충
+        if (main.tollFare == null || main.distanceM == null) {
+            infos.firstOrNull { it !== main && kotlin.math.abs(it.durationSec - main.durationSec) <= 120 }?.let {
+                main = main.copy(tollFare = main.tollFare ?: it.tollFare, distanceM = main.distanceM ?: it.distanceM)
+            }
+        }
+        val free = infos.filter { it.tollFare == 0 }.minByOrNull { it.etaMillis!! }
+        return AppComparison(
+            app = app, installed = true,
+            main = main, mainError = null,
+            free = if (free == null || free == main) null else free, freeError = null,
+            otherCount = infos.size - 1,
+            rawText = texts,
+        )
+    }
+
+    /** 방식 2: 각 사 API (키 필요) */
+    private fun compareByApi(g: Place, hasLocationPermission: Boolean) {
+        if (NavApp.entries.none { settings.hasKey(it) }) {
+            message = "API 방식은 설정에서 키를 입력해야 합니다"; return
+        }
         viewModelScope.launch {
             comparing = true
             try {
-                val s = start?.let { if (it.isCurrentLocation) refreshCurrent(it) else it }
-                    ?: run {
-                        if (!hasLocationPermission) {
-                            message = "출발지를 입력하거나 위치 권한을 허용하세요"; return@launch
-                        }
-                        val loc = LocationHelper.current(ctx)
-                            ?: run { message = "현재 위치를 가져올 수 없습니다"; return@launch }
-                        Place("현재 위치", "", loc.latitude, loc.longitude, true).also {
-                            start = it; lastLocation = it
-                        }
-                    }
+                val s = start ?: run {
+                    if (!hasLocationPermission) { message = "위치 권한을 허용하세요"; return@launch }
+                    val loc = LocationHelper.current(ctx)
+                        ?: run { message = "현재 위치를 가져올 수 없습니다"; return@launch }
+                    Place("현재 위치", "", loc.latitude, loc.longitude, true).also { lastLocation = it }
+                }
                 val st = settings
+                val now = System.currentTimeMillis()
                 results = coroutineScope {
-                    NavApp.entries.map { app -> async { compareOne(app, st, s, g) } }.awaitAll()
+                    NavApp.entries.map { app -> async { apiOne(app, st, s, g, now) } }.awaitAll()
                 }
-                comparedAt = System.currentTimeMillis()
-                val best = fastest()
-                if (best == null) {
-                    message = "경로를 가져오지 못했습니다. 각 앱의 오류 메시지를 확인하세요."
-                } else if (st.autoLaunch) {
-                    startCountdown(best.app)
-                }
+                comparedAt = now
+                afterCompare()
             } finally {
                 comparing = false
             }
         }
     }
 
-    /** 현재 위치 출발이면 비교 직전에 위치를 갱신 (실패 시 기존 값 사용) */
-    private suspend fun refreshCurrent(old: Place): Place {
-        val loc = runCatching { LocationHelper.current(ctx) }.getOrNull() ?: return old
-        return old.copy(lat = loc.latitude, lng = loc.longitude).also { start = it; lastLocation = it }
-    }
-
-    private suspend fun compareOne(app: NavApp, st: Settings, s: Place, g: Place): AppComparison {
+    private suspend fun apiOne(app: NavApp, st: Settings, s: Place, g: Place, now: Long): AppComparison {
         val installed = NavLauncher.isInstalled(ctx, app)
-        if (!st.hasKey(app)) {
-            return AppComparison(app, installed, null, "API 키 미설정", null, null)
-        }
+        if (!st.hasKey(app)) return AppComparison(app, installed, null, "API 키 미설정", null, null)
         suspend fun call(avoidToll: Boolean): Result<RouteInfo> = runCatching {
-            when (app) {
+            val r = when (app) {
                 NavApp.TMAP -> TmapRouteApi.route(st.tmapKey, s, g, avoidToll)
                 NavApp.NAVER -> NaverRouteApi.route(st.naverId, st.naverSecret, s, g, avoidToll)
                 NavApp.KAKAO -> KakaoRouteApi.route(st.kakaoKey, s, g, avoidToll)
             }
+            r.copy(etaMillis = now + r.durationSec * 1000L)
         }
         return coroutineScope {
             val mainD = async { call(false) }
-            // 무료도로 비교: 설정에서 켰거나, 기준이 무료도로일 때
-            val needFree = st.compareFree || st.criterion == Criterion.FREE
-            val freeD = if (needFree) async { call(true) } else null
+            val freeD = if (st.compareFree || st.criterion == Criterion.FREE) async { call(true) } else null
             val main = mainD.await()
             val free = freeD?.await()
             AppComparison(
-                app = app,
-                installed = installed,
-                main = main.getOrNull(),
-                mainError = main.exceptionOrNull()?.message,
-                free = free?.getOrNull(),
-                freeError = free?.exceptionOrNull()?.message,
+                app, installed,
+                main.getOrNull(), main.exceptionOrNull()?.message,
+                free?.getOrNull(), free?.exceptionOrNull()?.message,
             )
         }
     }
 
-    fun routeFor(c: AppComparison): RouteInfo? =
-        if (settings.criterion == Criterion.FREE) c.free else c.main
+    private fun afterCompare() {
+        val best = fastest()
+        if (best == null) {
+            message = "경로를 읽지 못했습니다. 각 앱 카드의 '읽은 글자 보기'를 캡처해서 알려주세요."
+        } else if (settings.autoLaunch) {
+            startCountdown(best.app)
+        }
+    }
 
-    /** 기준(기본/무료도로)에 따라, 설치된 앱 중 소요시간이 가장 짧은 앱 */
+    fun routeFor(c: AppComparison): RouteInfo? =
+        if (settings.criterion == Criterion.FREE) c.free ?: c.main?.takeIf { it.tollFare == 0 } else c.main
+
+    fun etaOf(r: RouteInfo): Long = r.etaMillis ?: (comparedAt + r.durationSec * 1000L)
+
+    /** 도착 예정 시각이 가장 빠른 앱 */
     fun fastest(): AppComparison? =
-        results.filter { it.installed && routeFor(it) != null }
-            .minByOrNull { routeFor(it)!!.durationSec }
+        results.filter { it.installed && routeFor(it) != null }.minByOrNull { etaOf(routeFor(it)!!) }
+
+    // ─────────────────────────── 안내 실행 ───────────────────────────
 
     fun launchNav(app: NavApp) {
         cancelCountdown()
-        val s = start ?: return
         val g = goal ?: return
         if (settings.criterion == Criterion.FREE) {
             message = "${app.label}에서 경로 옵션을 '무료도로'로 선택하세요"
         }
-        NavLauncher.launch(ctx, app, s, g)
+        NavLauncher.launch(ctx, app, start, g)
+        // 경로 화면에 '안내 시작' 버튼이 있으면 대신 눌러줌
+        val svc = ScanBus.service ?: return
+        viewModelScope.launch {
+            val startBtn = Regex("(?:길\\s*)?안내\\s*시작|경로\\s*안내\\s*시작|내비\\s*시작|안내\\s*시작하기")
+            var waited = 0
+            while (waited < 12_000) {
+                delay(700); waited += 700
+                if (svc.foregroundPackage() == app.pkg && svc.clickMatching(app.pkg, startBtn)) return@launch
+            }
+        }
     }
 
     private fun startCountdown(app: NavApp) {

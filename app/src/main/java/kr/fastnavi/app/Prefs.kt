@@ -10,6 +10,7 @@ data class Settings(
     val compareFree: Boolean = true,
     val autoLaunch: Boolean = false,
     val criterion: Criterion = Criterion.DEFAULT,
+    val mode: Mode = Mode.SCREEN,
 ) {
     fun hasKey(app: NavApp) = when (app) {
         NavApp.TMAP -> tmapKey.isNotBlank()
@@ -30,6 +31,7 @@ class Prefs(context: Context) {
         autoLaunch = sp.getBoolean("autoLaunch", false),
         criterion = runCatching { Criterion.valueOf(sp.getString("criterion", "DEFAULT")!!) }
             .getOrDefault(Criterion.DEFAULT),
+        mode = runCatching { Mode.valueOf(sp.getString("mode", "SCREEN")!!) }.getOrDefault(Mode.SCREEN),
     )
 
     fun save(s: Settings) {
@@ -41,6 +43,7 @@ class Prefs(context: Context) {
             .putBoolean("compareFree", s.compareFree)
             .putBoolean("autoLaunch", s.autoLaunch)
             .putString("criterion", s.criterion.name)
+            .putString("mode", s.mode.name)
             .apply()
     }
 

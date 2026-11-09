@@ -18,7 +18,7 @@ object NavLauncher {
     fun isInstalled(context: Context, app: NavApp): Boolean =
         context.packageManager.getLaunchIntentForPackage(app.pkg) != null
 
-    fun launch(context: Context, app: NavApp, start: Place, goal: Place) {
+    fun launch(context: Context, app: NavApp, start: Place?, goal: Place) {
         val uri = buildUri(context, app, start, goal)
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
             setPackage(app.pkg)
@@ -34,15 +34,39 @@ object NavLauncher {
         }
     }
 
+    /** 비교용: 각 앱의 '자동차 경로 결과' 화면을 띄움 (출발지 생략 = 그 앱이 현재 위치 사용) */
+    fun scanUri(context: Context, app: NavApp, start: Place?, goal: Place): String = when (app) {
+        NavApp.TMAP ->
+            "tmap://route?goalname=${enc(goal.name)}&goalx=${goal.lng}&goaly=${goal.lat}"
+        NavApp.NAVER -> buildString {
+            append("nmap://route/car?")
+            if (start != null && !start.isCurrentLocation) {
+                append("slat=${start.lat}&slng=${start.lng}&sname=${enc(start.name)}&")
+            }
+            append("dlat=${goal.lat}&dlng=${goal.lng}&dname=${enc(goal.name)}&appname=${context.packageName}")
+        }
+        NavApp.KAKAO -> buildString {
+            append("kakaomap://route?")
+            if (start != null && !start.isCurrentLocation) append("sp=${start.lat},${start.lng}&")
+            append("ep=${goal.lat},${goal.lng}&by=CAR")
+        }
+    }
+
+    fun intentFor(app: NavApp, uri: String): Intent =
+        Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
+            setPackage(app.pkg)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
-    fun buildUri(context: Context, app: NavApp, start: Place, goal: Place): String = when (app) {
+    fun buildUri(context: Context, app: NavApp, start: Place?, goal: Place): String = when (app) {
         NavApp.TMAP ->
             "tmap://route?goalname=${enc(goal.name)}&goalx=${goal.lng}&goaly=${goal.lat}"
 
         NavApp.NAVER -> {
             val appName = context.packageName
-            if (start.isCurrentLocation) {
+            if (start == null || start.isCurrentLocation) {
                 "nmap://navigation?dlat=${goal.lat}&dlng=${goal.lng}&dname=${enc(goal.name)}&appname=$appName"
             } else {
                 "nmap://route/car?slat=${start.lat}&slng=${start.lng}&sname=${enc(start.name)}" +
@@ -52,7 +76,7 @@ object NavLauncher {
 
         NavApp.KAKAO -> buildString {
             append("kakaomap://route?")
-            if (!start.isCurrentLocation) append("sp=${start.lat},${start.lng}&")
+            if (start != null && !start.isCurrentLocation) append("sp=${start.lat},${start.lng}&")
             append("ep=${goal.lat},${goal.lng}&by=CAR")
         }
     }

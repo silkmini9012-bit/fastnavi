@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">빠른길 내비</string>
+    <string name="a11y_desc">빠른길 내비가 티맵·네이버지도·카카오맵을 차례로 실행해 경로 결과 화면의 소요시간, 도착시각, 통행료를 읽고 비교합니다. 가장 빠른 앱에서 \'안내 시작\' 버튼도 대신 눌러줍니다. 읽은 내용은 폰 밖으로 보내지 않습니다.</string>
 </resources>

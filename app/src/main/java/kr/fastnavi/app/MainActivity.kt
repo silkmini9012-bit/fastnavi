@@ -1,6 +1,9 @@
 package kr.fastnavi.app
 
 import android.Manifest
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings as AndroidSettings
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -106,10 +109,6 @@ private sealed interface Screen {
 @Composable
 private fun App(vm: MainViewModel) {
     var screen by remember { mutableStateOf<Screen>(Screen.Main) }
-    // 키가 하나도 없으면 첫 실행 시 설정 화면으로
-    LaunchedEffect(Unit) {
-        if (NavApp.entries.none { vm.settings.hasKey(it) }) screen = Screen.Settings
-    }
     when (val s = screen) {
         Screen.Main -> MainScreen(
             vm,
@@ -161,12 +160,15 @@ private fun MainScreen(vm: MainViewModel, onSettings: () -> Unit, onSearch: (Tar
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (vm.settings.mode == Mode.SCREEN && ScanBus.service == null) {
+                item { SetupCard() }
+            }
             item { PlaceInputCard(vm, onSearch) }
             item { CriterionRow(vm) }
             item {
                 Button(
                     onClick = {
-                        if (vm.start == null && !hasPerm()) {
+                        if (vm.settings.mode == Mode.API && vm.start == null && !hasPerm()) {
                             permLauncher.launch(
                                 arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
                             )
@@ -179,7 +181,7 @@ private fun MainScreen(vm: MainViewModel, onSettings: () -> Unit, onSearch: (Tar
                     if (vm.comparing) {
                         CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
                         Spacer(Modifier.width(10.dp))
-                        Text("세 앱 경로 조회 중…")
+                        Text(vm.progress ?: "세 앱 경로 조회 중…")
                     } else {
                         Text("경로 비교하기", fontSize = 17.sp, fontWeight = FontWeight.Bold)
                     }
@@ -209,7 +211,9 @@ private fun MainScreen(vm: MainViewModel, onSettings: () -> Unit, onSearch: (Tar
                 }
                 item {
                     Text(
-                        "※ 각 사의 경로 API 예상치(조회 시점 교통 반영)입니다. 앱 실행 후 재탐색 결과와 1~2분 차이가 날 수 있습니다.",
+                        if (vm.settings.mode == Mode.SCREEN)
+                            "※ 각 앱을 실제로 실행해 결과 화면에서 읽은 값입니다. 앱 업데이트로 화면이 바뀌면 일부를 못 읽을 수 있어요. 그럴 땐 '읽은 글자 보기'를 캡처해서 알려주세요."
+                        else "※ 각 사 경로 API 예상치입니다. 앱 실행 후 재탐색 결과와 1~2분 차이가 날 수 있습니다.",
                         fontSize = 12.sp, color = Color.Gray,
                     )
                 }
@@ -219,11 +223,50 @@ private fun MainScreen(vm: MainViewModel, onSettings: () -> Unit, onSearch: (Tar
 }
 
 @Composable
+private fun SetupCard() {
+    val context = LocalContext.current
+    val enabledButNotRunning = ScanBus.isEnabledInSettings(context)
+    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF4E5)), shape = RoundedCornerShape(14.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("처음 한 번만: 접근성 권한 켜기", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(
+                "티맵·네이버지도·카카오맵을 차례로 열어 결과 화면의 시간과 통행료를 읽으려면 이 권한이 필요해요. " +
+                    "읽은 내용은 폰 밖으로 나가지 않습니다.",
+                fontSize = 13.sp, color = Color(0xFF5F6368),
+            )
+            if (enabledButNotRunning) {
+                Text("설정에는 켜져 있는데 연결이 안 됐어요. 접근성 설정에서 껐다가 다시 켜 주세요.",
+                    fontSize = 13.sp, color = TollRed)
+            }
+            Text("① 아래 [접근성 설정 열기] → '설치된 앱'(또는 '설치된 서비스') → 빠른길 내비 → 사용 켜기", fontSize = 13.sp)
+            Button(
+                onClick = {
+                    context.startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("접근성 설정 열기") }
+            Text(
+                "② 켜지지 않고 '제한된 설정' 안내가 나오면: [앱 정보 열기] → 오른쪽 위 ⋮ → '제한된 설정 허용' → 다시 ①",
+                fontSize = 13.sp,
+            )
+            OutlinedButton(
+                onClick = {
+                    context.startActivity(
+                        Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")),
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("앱 정보 열기") }
+        }
+    }
+}
+
+@Composable
 private fun PlaceInputCard(vm: MainViewModel, onSearch: (Target) -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(14.dp)) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                PlaceRow("출발", vm.start?.name ?: "현재 위치 (자동)", vm.start == null, Color(0xFF0064FF)) {
+                PlaceRow("출발", vm.start?.name ?: "현재 위치", false, Color(0xFF0064FF)) {
                     onSearch(Target.START)
                 }
                 HorizontalDivider(Modifier.padding(vertical = 6.dp))
@@ -284,20 +327,27 @@ private fun BestCard(vm: MainViewModel, best: AppComparison) {
                 Spacer(Modifier.width(8.dp))
                 Text(best.app.label, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
-                Text(Fmt.eta(r.durationSec, vm.comparedAt) + " 도착", color = Color.White, fontSize = 20.sp,
+                Text(Fmt.clock(vm.etaOf(r)) + " 도착", color = Color.White, fontSize = 20.sp,
                     fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "${Fmt.duration(r.durationSec)} · ${Fmt.distance(r.distanceM)} · " +
-                    if (r.tollFare > 0) "통행료 ${Fmt.won(r.tollFare)}" else "통행료 없음",
+                listOfNotNull(
+                    Fmt.duration(r.durationSec),
+                    r.distanceM?.let { Fmt.distance(it) },
+                    when {
+                        r.tollFare == null -> "통행료 정보 없음"
+                        r.tollFare > 0 -> "통행료 ${Fmt.won(r.tollFare)}"
+                        else -> "통행료 없음"
+                    },
+                ).joinToString(" · "),
                 color = Color(0xFFDDE3EE),
             )
             // 2등과의 차이
             val second = vm.results.filter { it.app != best.app && it.installed }
-                .mapNotNull { vm.routeFor(it) }.minByOrNull { it.durationSec }
+                .mapNotNull { vm.routeFor(it) }.minByOrNull { vm.etaOf(it) }
             if (second != null) {
-                val gap = second.durationSec - r.durationSec
+                val gap = ((vm.etaOf(second) - vm.etaOf(r)) / 1000).toInt()
                 Text(
                     if (gap >= 60) "다음으로 빠른 앱보다 ${Fmt.duration(gap)} 빨라요" else "다른 앱과 거의 같아요 (1분 이내)",
                     color = Color(0xFFB8C4DC), fontSize = 13.sp,
@@ -323,9 +373,12 @@ private fun BestCard(vm: MainViewModel, best: AppComparison) {
 }
 
 @Composable
-private fun TollBadge(toll: Int) {
-    val (bg, fg, text) = if (toll > 0) Triple(Color(0xFFFCE8E6), TollRed, "유료 ${Fmt.won(toll)}")
-    else Triple(Color(0xFFE6F4EA), FreeGreen, "무료")
+private fun TollBadge(toll: Int?) {
+    val (bg, fg, text) = when {
+        toll == null -> Triple(Color(0xFFF1F3F4), Color.Gray, "통행료 ?")
+        toll > 0 -> Triple(Color(0xFFFCE8E6), TollRed, "유료 ${Fmt.won(toll)}")
+        else -> Triple(Color(0xFFE6F4EA), FreeGreen, "무료")
+    }
     Text(
         text, color = fg, fontSize = 13.sp, fontWeight = FontWeight.Bold,
         modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(bg).padding(horizontal = 8.dp, vertical = 3.dp),
@@ -362,7 +415,7 @@ private fun AppCard(vm: MainViewModel, c: AppComparison, isBest: Boolean, maxDur
             // 기본 경로
             RouteLine(
                 title = "기본 경로",
-                r = c.main, err = c.mainError, comparedAt = vm.comparedAt,
+                r = c.main, err = c.mainError, eta = c.main?.let { vm.etaOf(it) },
                 maxDur = maxDur, color = appColor, emphasized = !freeMode,
             )
             // 무료도로 경로
@@ -370,18 +423,18 @@ private fun AppCard(vm: MainViewModel, c: AppComparison, isBest: Boolean, maxDur
                 Spacer(Modifier.height(8.dp))
                 RouteLine(
                     title = "무료도로",
-                    r = c.free, err = c.freeError, comparedAt = vm.comparedAt,
+                    r = c.free, err = c.freeError, eta = c.free?.let { vm.etaOf(it) },
                     maxDur = maxDur, color = appColor.copy(alpha = 0.55f), emphasized = freeMode,
                 )
             }
             // 통행료 vs 시간 인사이트
             val m = c.main; val f = c.free
-            if (m != null && f != null && m.tollFare > 0) {
-                val saved = f.durationSec - m.durationSec
+            if (m != null && f != null && (m.tollFare ?: 0) > 0) {
+                val saved = ((vm.etaOf(f) - vm.etaOf(m)) / 1000).toInt()
                 Spacer(Modifier.height(6.dp))
                 Text(
                     when {
-                        saved >= 60 -> "💡 통행료 ${Fmt.won(m.tollFare - f.tollFare)} 내면 ${Fmt.duration(saved)} 빨라요"
+                        saved >= 60 -> "💡 통행료 ${Fmt.won(m.tollFare ?: 0)} 내면 ${Fmt.duration(saved)} 빨라요"
                         else -> "💡 무료도로로 가도 시간 차이가 거의 없어요"
                     },
                     fontSize = 13.sp, color = Color(0xFF5F6368),
@@ -394,7 +447,23 @@ private fun AppCard(vm: MainViewModel, c: AppComparison, isBest: Boolean, maxDur
                 )
                 if (extra.isNotEmpty()) Text(extra.joinToString(" · "), fontSize = 12.sp, color = Color.Gray)
             }
-            if (vm.routeFor(c) != null || c.main != null) {
+            if (c.otherCount > 0) {
+                Text("이 앱이 보여준 다른 경로 ${c.otherCount}개 중 가장 빠른 경로 기준", fontSize = 12.sp, color = Color.Gray)
+            }
+            if (c.rawText.isNotEmpty()) {
+                var open by remember { mutableStateOf(false) }
+                TextButton(onClick = { open = !open }) {
+                    Text(if (open) "읽은 글자 닫기" else "읽은 글자 보기", fontSize = 12.sp)
+                }
+                if (open) {
+                    Text(
+                        c.rawText.take(80).joinToString(" | "),
+                        fontSize = 11.sp, color = Color(0xFF5F6368),
+                        modifier = Modifier.background(Color(0xFFF4F6FA)).padding(8.dp),
+                    )
+                }
+            }
+            if (c.installed && (vm.routeFor(c) != null || c.main != null || c.mainError != null)) {
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
                     onClick = { vm.launchNav(c.app) },
@@ -408,7 +477,7 @@ private fun AppCard(vm: MainViewModel, c: AppComparison, isBest: Boolean, maxDur
 
 @Composable
 private fun RouteLine(
-    title: String, r: RouteInfo?, err: String?, comparedAt: Long,
+    title: String, r: RouteInfo?, err: String?, eta: Long?,
     maxDur: Int, color: Color, emphasized: Boolean,
 ) {
     Column {
@@ -424,7 +493,7 @@ private fun RouteLine(
                 fontWeight = if (emphasized) FontWeight.Bold else FontWeight.Medium,
             )
             Spacer(Modifier.width(8.dp))
-            Text("${Fmt.eta(r.durationSec, comparedAt)} 도착 · ${Fmt.distance(r.distanceM)}",
+            Text(listOfNotNull(eta?.let { Fmt.clock(it) + " 도착" }, r.distanceM?.let { Fmt.distance(it) }).joinToString(" · "),
                 fontSize = 13.sp, color = Color(0xFF5F6368), modifier = Modifier.weight(1f))
             TollBadge(r.tollFare)
         }
@@ -468,7 +537,7 @@ private fun SearchScreen(vm: MainViewModel, target: Target, onBack: () -> Unit) 
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("장소, 주소 검색 (예: 강남역, 판교 현대백화점)") },
+                placeholder = { Text("주소나 장소 (예: 다산순환로 220, 강남역)") },
                 singleLine = true,
                 trailingIcon = {
                     IconButton(onClick = { vm.search(query) }) { Icon(Icons.Default.Search, "검색") }
@@ -481,15 +550,9 @@ private fun SearchScreen(vm: MainViewModel, target: Target, onBack: () -> Unit) 
             vm.searchError?.let { Text(it, color = TollRed, modifier = Modifier.padding(vertical = 8.dp)) }
 
             LazyColumn {
-                item {
-                    ResultRow(Icons.Default.LocationOn, "현재 위치", "GPS로 현재 위치 사용") {
-                        val granted = ContextCompat.checkSelfPermission(
-                            context, Manifest.permission.ACCESS_FINE_LOCATION,
-                        ) == PackageManager.PERMISSION_GRANTED
-                        if (granted) vm.useCurrentLocation(target, onBack)
-                        else permLauncher.launch(
-                            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
-                        )
+                if (target == Target.START) item {
+                    ResultRow(Icons.Default.LocationOn, "현재 위치", "내비 앱이 지금 위치에서 출발") {
+                        vm.useCurrentLocation(Target.START, onBack)
                     }
                 }
                 if (vm.searchResults.isEmpty() && vm.recentGoals.isNotEmpty()) {
@@ -549,10 +612,19 @@ private fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
             Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            SectionTitle("API 키")
+            SectionTitle("비교 방식")
+            Mode.entries.forEach { m ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { s = s.copy(mode = m) },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = s.mode == m, onClick = { s = s.copy(mode = m) })
+                    Text(m.label)
+                }
+            }
+            SectionTitle("API 키 (선택 사항)")
             Text(
-                "앱들이 내부 예상시간을 외부에 공개하지 않기 때문에, 각 사의 공식 경로 API로 같은 엔진의 예상 시간을 조회합니다. " +
-                    "키가 없는 앱은 비교에서 빠집니다.",
+                "'API로 조회' 방식을 고를 때만 필요합니다. 기본 방식(앱 화면 읽기)은 키 없이 동작해요.",
                 fontSize = 13.sp, color = Color.Gray,
             )
             KeyField("TMAP 앱키 (SK open API)", s.tmapKey) { s = s.copy(tmapKey = it) }
